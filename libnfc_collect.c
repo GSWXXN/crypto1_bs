@@ -352,8 +352,11 @@ enum {
 
 #define VT100_cleareol "\r\33[2K"
 
+int bits = 0;
+uint8_t pbits[1];
+
 // Almost entirely based on code from Mifare Offline Cracker (MFOC) by Nethemba, cheers guys! :)
-int nested_auth(uint32_t uid, uint64_t known_key, uint8_t ab_key, uint8_t for_block, uint8_t target_block, uint8_t target_key, FILE* fp)
+int nested_auth(uint32_t uid, uint64_t known_key, uint8_t ab_key, uint8_t for_block, uint8_t target_block, uint8_t target_key, FILE* fp_bin, FILE* fp_txt)
 {
     uint64_t *pcs;
 
@@ -461,16 +464,33 @@ int nested_auth(uint32_t uid, uint64_t known_key, uint8_t ab_key, uint8_t for_bl
         return ERROR;
     }
 
-    if(fp){
+    if(fp_bin){
+        if (bits == 2){
+            fwrite(pbits, 1, 1, fp_bin);
+            bits = 0;
+            pbits[0] = 0;
+        }
+        bits += 1;
         for(i = 0; i < 4; i++){
-            fprintf(fp,"%02x", Rx[i]);
+            uint8_t p = parity(Rx[i]);
+            if(RxPar[i] == oddparity(Rx[i])){
+                p ^= 1;
+            }
+            pbits[0] <<= 1;
+            pbits[0] |= p;
+        }
+        fwrite(Rx, 4, 1, fp_bin);
+    }
+    if(fp_txt){
+        for(i = 0; i < 4; i++){
+            fprintf(fp_txt,"%02x", Rx[i]);
             if(RxPar[i] != oddparity(Rx[i])){
-                fprintf(fp,"! ");
+                fprintf(fp_txt,"! ");
             } else {
-                fprintf(fp,"  ");
+                fprintf(fp_txt,"  ");
             }
         }
-        fprintf(fp, "\n");
+        fprintf(fp_txt, "\n");
     }
     if(nonces){
         nonces[nonces_collected] = 0;
@@ -534,15 +554,10 @@ void notify_status_online(int sig){
         printf(VT100_cleareol "Collected %zu nonces... ", nonces_collected);
     } else {
         printf(VT100_cleareol "Collected %zu nonces... leftover complexity %"llu" (~2^%0.2f)", nonces_collected, total_states, log(total_states) / log(2));
-        char c;
-        if(scanf("%c", &c) == 1 || total_states < CUTOFF){
-            printf(" - initializing brute-force phase...\n");
-            alarm(0);
-            stop_collection = true;
-            return;
-        } else {
-            printf(" - press enter to start brute-force phase");
-        }
+        alarm(0);
+        stop_collection = true;
+        return;
+
     }
     alarm(1);
     fflush(stdout);
@@ -554,11 +569,13 @@ uint8_t for_block;
 uint8_t ab_key;
 uint8_t target_block;
 uint8_t target_key;
-FILE* fp;
+int fileType = 0;
+FILE* fp_bin;
+FILE* fp_txt;
 
 const nfc_modulation nmMifare = {
-    .nmt = NMT_ISO14443A,
-    .nbr = NBR_106,
+        .nmt = NMT_ISO14443A,
+        .nbr = NBR_106,
 };
 
 void * update_nonces_thread(void* v){
@@ -568,7 +585,7 @@ void * update_nonces_thread(void* v){
         nfc_device_set_property_bool(pnd,NP_HANDLE_PARITY,true);
         // Poll for a ISO14443A (MIFARE) tag
         if (nfc_initiator_select_passive_target(pnd,nmMifare,NULL,0,&target)) {
-            nested_auth(uid, known_key, ab_key, for_block, target_block, target_key, fp);
+            nested_auth(uid, known_key, ab_key, for_block, target_block, target_key, fp_bin, fp_txt);
         } else {
             printf(VT100_cleareol "Don't move the tag!");
             fflush(stdout);
@@ -620,14 +637,25 @@ int main (int argc, const char * argv[]) {
     for_block = atoi(argv[2]);
     ab_key = MC_AUTH_A;
     if(argv[3][0] == 'b' || argv[3][0] == 'B'){
-       ab_key = MC_AUTH_B;
+        ab_key = MC_AUTH_B;
     }
     target_block = atoi(argv[4]);
     target_key = MC_AUTH_A;
     if(argv[5][0] == 'b' || argv[5][0] == 'B'){
-       target_key = MC_AUTH_B;
+        target_key = MC_AUTH_B;
     }
-    switch(nested_auth(uid, known_key, ab_key, for_block, target_block, target_key, NULL)){
+
+    if (argc > 6) {
+        if (strcmp(argv[6], "bin") == 0) {
+            fileType = 1;
+        } else if (strcmp(argv[6], "txt") == 0) {
+            fileType = 2;
+        } else if (strcmp(argv[6], "all") == 0) {
+            fileType = 3;
+        }
+    }
+
+    switch(nested_auth(uid, known_key, ab_key, for_block, target_block, target_key, NULL, NULL)){
         case KEY_WRONG:
             printf("%012"PRIx64" doesn't look like the right key %s for block %u (sector %u)\n", known_key, ab_key == MC_AUTH_A ? "A" : "B", for_block, block_to_sector(for_block));
             return 1;
@@ -638,10 +666,26 @@ int main (int argc, const char * argv[]) {
             printf("Some other error occurred.\n");
             break;
     }
-    
-    char filename[21];
-    sprintf(filename, "0x%08x_%03u%s.txt", uid, target_block, target_key == MC_AUTH_A ? "A" : "B");
-    fp = fopen(filename, "wb");
+
+    if (fileType == 1 || fileType == 3) {
+        if (argc > 7) {
+            fp_bin = fopen(argv[7], "wb");
+        } else {
+            fp_bin = fopen("nonces.bin", "wb");
+        }
+        if (fp_bin == NULL) {
+            printf("Error opening file!\n");
+            exit(1);
+        }
+        fwrite(target.nti.nai.abtUid, 6, 1, fp_bin);
+    }
+    if (fileType == 2 || fileType == 3) {
+        fp_txt = fopen("nonces.txt", "wb");
+        if (fp_txt == NULL) {
+            printf("Error opening file!\n");
+            exit(1);
+        }
+    }
 
     printf("Found tag with uid %04x, collecting nonces for key %s of block %u (sector %u) using known key %s %012"PRIx64" for block %u (sector %u)\n",
            uid, target_key == MC_AUTH_A ? "A" : "B", target_block, block_to_sector(target_block), ab_key == MC_AUTH_A ? "A" : "B", known_key, for_block, block_to_sector(for_block));
@@ -659,80 +703,13 @@ int main (int argc, const char * argv[]) {
     pthread_join(prediction_thread, 0);
     alarm(0);
 
-    if(fp){
-        fclose(fp);
+    if(fp_bin){
+        fclose(fp_bin);
+    }
+    if(fp_txt){
+        fclose(fp_txt);
     }
     nfc_close(pnd);
 
-    if(!space){
-        space = craptev1_get_space(nonces, 95, uid);
-    }
-    if(space){
-        total_states = craptev1_sizeof_space(space);
-    } else {
-        total_states = 0;
-    }
-    if(!total_states){
-        fprintf(stderr, "No solution found :(\n");
-        return 1;
-    }
-
-#ifndef __WIN32
-    thread_count = sysconf(_SC_NPROCESSORS_CONF);
-#else
-    thread_count = 1;
-#endif
-    // append some zeroes to the end of the space to make sure threads don't go off into the wild
-    size_t j = 0;
-    for(j = 0; space[j]; j+=5){
-    }
-    size_t fill = j + (5*thread_count);
-    for(; j < fill; j++) {
-        space[j] = 0;
-    }
-    pthread_t threads[thread_count];
-
-    crypto1_bs_init();
-
-    uint8_t rollback_byte = **space;
-    // convert to 32 bit little-endian
-    crypto1_bs_bitslice_value32(rev32((rollback_byte)), bitsliced_rollback_byte, 8);
-
-    for(size_t tests = 0; tests < NONCE_TESTS; tests++){
-        // pre-xor the uid into the decrypted nonces, and also pre-xor the uid parity into the encrypted parity bits - otherwise an exta xor is required in the decryption routine
-        uint32_t test_nonce = uid^rev32(nonces[tests]);
-        uint32_t test_parity = (nonces[tests]>>32)^rev32(uid);
-        test_parity = ((parity(test_parity >> 24 & 0xff) & 1) | (parity(test_parity>>16 & 0xff) & 1)<<1 | (parity(test_parity>>8 & 0xff) & 1)<<2 | (parity(test_parity & 0xff) & 1) << 3);
-        crypto1_bs_bitslice_value32(test_nonce, bitsliced_encrypted_nonces[tests], 32);
-        // convert to 32 bit little-endian
-        crypto1_bs_bitslice_value32(~(test_parity)<<24, bitsliced_encrypted_parity_bits[tests], 4);
-    }
-
-    printf("Starting %zu threads to test %"llu" states using %u-way bitslicing\n", thread_count, total_states, MAX_BITSLICES);
-    total_states_tested = 0;
-    keys_found = 0;
-    signal(SIGALRM, notify_status_offline);
-
-    notify_status_offline(0);
-    alarm(1);
-
-    size_t i;
-    for(i = 0; i < thread_count; i++){
-        pthread_create(&threads[i], NULL, crack_states_thread, (void*) i);
-    }
-    for(i = 0; i < thread_count; i++){
-        pthread_join(threads[i], 0);
-    }
-    alarm(0);
-    printf("\n");
-    if(!keys_found){
-        fprintf(stderr, "No solution found :(\n");
-        return 1;
-    } else {
-        printf("Found key: %012"PRIx64"\n", found_key);
-    }
-    printf("Tested %"llu" states\n", total_states_tested);
-
-    craptev1_destroy_space(space);
     return 0;
 }

@@ -10,7 +10,7 @@ CC     = gcc
 CFLAGS = -std=gnu99 -O3 -march=native
 LDFLAGS=  -Wl,--allow-multiple-definition
 
-all: solve_bs solve_piwi_bs solve_piwi libnfc_crypto1_crack
+all: solve_bs solve_piwi_bs solve_piwi libnfc_collect
 
 CRAPTEV1 = craptev1-v1.1/craptev1.c -I craptev1-v1.1/
 CRAPTO1 = crapto1-v3.3/crapto1.c crapto1-v3.3/crypto1.c -I crapto1-v3.3/ 
@@ -25,11 +25,11 @@ solve_piwi_bs:
 solve_piwi:
 	$(CC) $(CFLAGS) $@.c $(CRYPTO1_BS) $(CRAPTO1) ${CRAPTEV1} -o $@ -lpthread $(LDFLAGS)
 
-libnfc_crypto1_crack:
+libnfc_collect:
 	$(CC) $(CFLAGS) $@.c $(CRYPTO1_BS) $(CRAPTO1) ${CRAPTEV1} -o $@ -lpthread -lnfc -lm $(LDFLAGS)
 
 clean:
-	rm -f solve.so solve_bs solve_piwi_bs solve_piwi libnfc_crypto1_crack
+	rm -f solve.so solve_bs solve_piwi_bs solve_piwi libnfc_collect
 
 get_craptev1:
 	echo 'Stop being lazy, find your own file!'
@@ -47,12 +47,12 @@ MINGW32 = i686-w64-mingw32-gcc
 MINGW64 = x86_64-w64-mingw32-gcc
 # solve.c code cannot be compiled on windows without patching the includes
 
-WIN32EXES = solve_piwi_bs32.exe solve_piwi32.exe libnfc_crypto1_crack32.exe
+WIN32EXES = solve_piwi_bs32.exe solve_piwi32.exe libnfc_collect.exe
 win32: $(WIN32EXES)
 win32_clean:
 	rm -f $(WIN32EXES)
 
-WIN64EXES = solve_piwi_bs64.exe solve_piwi64.exe libnfc_crypto1_crack64.exe
+WIN64EXES = solve_piwi_bs64.exe solve_piwi64.exe libnfc_collect.exe
 win64: $(WIN64EXES)
 win64_clean:
 	rm -f $(WIN64EXES)
