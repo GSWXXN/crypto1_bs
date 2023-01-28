@@ -8,8 +8,7 @@
 CC     = gcc
 
 CFLAGS = @CFLAGS@
-LDFLAGS= -Wl
-LDFLAG_FROM_CONFIG = @LDFLAGS@ 
+LDFLAGS= @LDFLAGS@ 
 CPPFLAGS = @CPPFLAGS@
 BIN = @prefix@/bin
 
@@ -29,7 +28,7 @@ solve_piwi:
 	$(CC) $(CFLAGS) $@.c $(CRYPTO1_BS) $(CRAPTO1) ${CRAPTEV1} -o $@ -lpthread $(LDFLAGS)
 
 libnfc-collect:
-	$(CC) $(CFLAGS) $(CPPFLAGS) $@.c $(CRYPTO1_BS) $(CRAPTO1) ${CRAPTEV1} -o $@ -lpthread $(LDFLAG_FROM_CONFIG) -lnfc -lm $(LDFLAGS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $@.c $(CRYPTO1_BS) $(CRAPTO1) ${CRAPTEV1} -o $@ -lpthread -lnfc -lm $(LDFLAGS)
 
 clean:
 	rm -f solve.so solve_bs solve_piwi_bs solve_piwi libnfc-collect
