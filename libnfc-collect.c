@@ -291,6 +291,9 @@ POSSIBILITY OF SUCH DAMAGES.
 #include <unistd.h>
 #include <nfc/nfc.h>
 #include <math.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "crypto1_bs_crack.h"
 #define llu PRIu64
@@ -344,11 +347,10 @@ static nfc_context *context;
 uint64_t *nonces = NULL;
 size_t nonces_collected;
 
-enum {
-    OK,
-    ERROR,
-    KEY_WRONG,
-};
+#define OK 1
+#define ERROR_OCCR 2
+#define KEY_WRONG 3
+
 
 #define VT100_cleareol "\r\33[2K"
 
@@ -382,24 +384,24 @@ int nested_auth(uint32_t uid, uint64_t known_key, uint8_t ab_key, uint8_t for_bl
     // We need full control over the CRC
     if (nfc_device_set_property_bool(pnd, NP_HANDLE_CRC, false) < 0)  {
         nfc_perror(pnd, "nfc_device_set_property_bool crc");
-        return ERROR;
+        return ERROR_OCCR;
     }
 
     // Request plain tag-nonce
     // TODO: Set NP_EASY_FRAMING option only once if possible
     if (nfc_device_set_property_bool(pnd, NP_EASY_FRAMING, false) < 0) {
         nfc_perror(pnd, "nfc_device_set_property_bool framing");
-        return ERROR;
+        return ERROR_OCCR;
     }
 
     if (nfc_initiator_transceive_bytes(pnd, Cmd, 4, Rx, sizeof(Rx), 0) < 0) {
         fprintf(stdout, "Error while requesting plain tag-nonce ");
-        return ERROR;
+        return ERROR_OCCR;
     }
 
     if (nfc_device_set_property_bool(pnd, NP_EASY_FRAMING, true) < 0) {
         nfc_perror(pnd, "nfc_device_set_property_bool");
-        return ERROR;
+        return ERROR_OCCR;
     }
 
     // Save the tag nonce (Nt)
@@ -448,7 +450,7 @@ int nested_auth(uint32_t uid, uint64_t known_key, uint8_t ab_key, uint8_t for_bl
 
     if (!((crypto1_word(pcs, 0x00, 0) ^ bytes_to_num(Rx, 4)) == (Nt & 0xFFFFFFFF))) {
         fprintf(stderr, "[At] is not Suc3(Nt), something is wrong, exiting.. ");
-        return ERROR;
+        return ERROR_OCCR;
     }
 
     Cmd[0] = target_key;
@@ -461,26 +463,31 @@ int nested_auth(uint32_t uid, uint64_t known_key, uint8_t ab_key, uint8_t for_bl
     }
     if (((res = nfc_initiator_transceive_bits(pnd, ArEnc, 32, ArEncPar, Rx, sizeof(Rx), RxPar)) < 0) || (res != 32)) {
         fprintf(stderr, "Reader-answer transfer error, exiting.. ");
-        return ERROR;
+        return ERROR_OCCR;
     }
 
-    if(fp_bin){
-        if (bits == 2){
+    if(fp_bin) {
+        if(bits == 2) {
             fwrite(pbits, 1, 1, fp_bin);
             bits = 0;
             pbits[0] = 0;
         }
         bits += 1;
-        for(i = 0; i < 4; i++){
-            uint8_t p = parity(Rx[i]);
-            if(RxPar[i] == oddparity(Rx[i])){
+        uint8_t p, temp = 0;
+        for(i = 0; i < 4; i++) {
+            p = parity(Rx[i]);
+            uint8_t odd_parity = oddparity(Rx[i]);
+            if(RxPar[i] == odd_parity) {
                 p ^= 1;
             }
-            pbits[0] <<= 1;
-            pbits[0] |= p;
+            temp |= (p << (3 - i));
         }
+        pbits[0] <<= 4;
+        pbits[0] |= temp;
         fwrite(Rx, 4, 1, fp_bin);
+        fflush(fp_bin);
     }
+
     if(fp_txt){
         for(i = 0; i < 4; i++){
             fprintf(fp_txt,"%02x", Rx[i]);
@@ -491,6 +498,7 @@ int nested_auth(uint32_t uid, uint64_t known_key, uint8_t ab_key, uint8_t for_bl
             }
         }
         fprintf(fp_txt, "\n");
+        fflush(fp_txt);
     }
     if(nonces){
         nonces[nonces_collected] = 0;
@@ -542,13 +550,21 @@ void * update_predictions_thread(void* p){
     return NULL;
 }
 
-void notify_status_offline(int sig){
-    printf(VT100_cleareol "Cracking... %6.02f%%", (100.0*total_states_tested/(total_states)));
-    alarm(1);
+#ifdef _WIN32
+HANDLE timer_handle;
+void CALLBACK notify_status_online(PVOID lpParam, BOOLEAN TimerOrWaitFired) {
+    if (!total_states) {
+        printf(VT100_cleareol "Collected %zu nonces... ", nonces_collected);
+    } else {
+        printf(VT100_cleareol "Collected %zu nonces... leftover complexity %"llu" (~2^%0.2f)", nonces_collected, total_states, log(total_states) / log(2));
+        DeleteTimerQueueTimer(NULL, timer_handle, NULL);
+        stop_collection = true;
+        return;
+    }
+    CreateTimerQueueTimer(&timer_handle, NULL, notify_status_online, NULL, 1000, 0, 0);
     fflush(stdout);
-    signal(SIGALRM, notify_status_offline);
 }
-
+#else
 void notify_status_online(int sig){
     if(!total_states){
         printf(VT100_cleareol "Collected %zu nonces... ", nonces_collected);
@@ -563,6 +579,7 @@ void notify_status_online(int sig){
     fflush(stdout);
     signal(SIGALRM, notify_status_online);
 }
+#endif
 
 uint64_t known_key;
 uint8_t for_block;
@@ -593,6 +610,8 @@ void * update_nonces_thread(void* v){
     }
     return NULL;
 }
+
+
 
 int main (int argc, const char * argv[]) {
     nfc_init(&context);
@@ -693,15 +712,24 @@ int main (int argc, const char * argv[]) {
     nonces = malloc(sizeof (uint64_t) <<  24);
     memset(nonces, 0xff, sizeof (uint64_t) <<  24);
 
+#ifdef _WIN32
+
+    CreateTimerQueueTimer(&timer_handle, NULL, notify_status_online, NULL, 1000, 0, 0);
+#else
     fcntl(0, F_SETFL, O_NONBLOCK);
     signal(SIGALRM, notify_status_online);
     alarm(1);
+#endif
     pthread_t prediction_thread, nonce_gathering_thread;
     pthread_create(&nonce_gathering_thread, NULL, update_nonces_thread, NULL);
     pthread_create(&prediction_thread, NULL, update_predictions_thread, NULL);
     pthread_join(nonce_gathering_thread, 0);
     pthread_join(prediction_thread, 0);
+#ifdef _WIN32
+    DeleteTimerQueueTimer(NULL, timer_handle, NULL);
+#else
     alarm(0);
+#endif
 
     if(fp_bin){
         fclose(fp_bin);
