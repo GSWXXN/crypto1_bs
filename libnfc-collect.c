@@ -680,7 +680,7 @@ int main (int argc, const char * argv[]) {
             return 1;
         case OK:
             break;
-        case ERROR:
+        case ERROR_OCCR:
         default:
             printf("Some other error occurred.\n");
             break;
@@ -725,9 +725,7 @@ int main (int argc, const char * argv[]) {
     pthread_create(&prediction_thread, NULL, update_predictions_thread, NULL);
     pthread_join(nonce_gathering_thread, 0);
     pthread_join(prediction_thread, 0);
-#ifdef _WIN32
-    DeleteTimerQueueTimer(NULL, timer_handle, NULL);
-#else
+#ifndef _WIN32
     alarm(0);
 #endif
 
